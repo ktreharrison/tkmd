@@ -236,6 +236,7 @@ pub fn print_history(
             }
             "pending-close" => format!("{BOLD}{PURPLE}◐ review     {RESET}"),
             "completed" => format!("{BOLD}{GREEN}✓ completed  {RESET}"),
+            "note" => format!("{AQUA}✎ note       {RESET}"),
             other => format!("{:<13}", truncate_vis(other, 13)),
         };
 

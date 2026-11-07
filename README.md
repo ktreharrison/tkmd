@@ -218,6 +218,7 @@ In merged view (`tk -A`), task IDs display distinct scope indicators (`tk-001L` 
 | `tk claim 1 --owner claude -s 8y9380573586` | `tk c 1` | Claim `tk-001` (`status: in-progress`) and attach agent `session_id` |
 | `tk resume 1` | `tk u 1` | Resume the AI agent session attached to `tk-001` (`claude -r <id>`, `codex resume <id>`, etc.) |
 | `tk eval 1` | `tk eval 1` | Execute the card's `eval` shell command and log `[PASS]` / `[FAIL]` |
+| `tk note 1 built X because Y` | `tk note 1 ...` | Append a note to the execution log (spec, DoD and eval untouched); shown at sign-off. MCP: `task_note` |
 | `tk eval --dry-run 1` | `tk eval --dry-run 1` | Check the eval without running it (syntax, programs, scripts, `cd` targets, files the claim will pin); writes nothing |
 | `tk find [query]` / `tk find -i` | `tk f` | Fuzzy search tasks (inline table or interactive `fzf` picker + `bat` preview) |
 | `tk history [id]` | `tk h` | Event audit log from `tasks/.events.jsonl` with step duration deltas |

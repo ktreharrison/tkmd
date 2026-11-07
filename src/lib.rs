@@ -208,6 +208,21 @@ enum Commands {
         #[arg(short, long)]
         note: Option<String>,
     },
+    /// Append a note to a task's execution log (spec, DoD and eval are untouched), e.g.
+    /// `tk note 3 built X instead of Y because ...`. Shown at sign-off.
+    Note {
+        /// Task ID (e.g. 1 or tk-001)
+        id: String,
+        /// Note text (no quotes needed; quote it if it contains words starting with `-`)
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+        /// Who is writing the note (default: you at a terminal, `agent` otherwise)
+        #[arg(short, long)]
+        actor: Option<String>,
+        /// Agent session ID or resume command, recorded on the note event
+        #[arg(short, long)]
+        session: Option<String>,
+    },
     /// Edit a task card directly in Helix (`hx`) or $EDITOR (alias: `e`)
     #[command(visible_alias = "e")]
     Edit {
@@ -1481,6 +1496,25 @@ pub fn run() -> Result<()> {
             if failed > 0 {
                 anyhow::bail!("{} of {} task(s) not closed", failed, cards.len());
             }
+        }
+        Commands::Note {
+            id,
+            text,
+            actor,
+            session,
+        } => {
+            let actor = actor.unwrap_or_else(|| {
+                if is_interactive() {
+                    store.config.default_owner.clone()
+                } else {
+                    "agent".to_string()
+                }
+            });
+            let card = store.add_note(&id, &actor, &text.join(" "), session.as_deref())?;
+            println!(
+                "{GREEN}📝 Noted{RESET} on {BOLD}{}{RESET} by `{}`: {}",
+                card.meta.id, actor, card.meta.title
+            );
         }
         Commands::Edit { id } => {
             let card = store.find_task(&id)?;
@@ -2867,6 +2901,9 @@ fn cli_approval(store: &TaskStore, cards: &[TaskCard], yes: bool) -> Result<Appr
                 "      {RED}check changed since claim:{RESET} {} (approve only with --accept-changed-eval)",
                 change
             )?;
+        }
+        for n in store::notes_since_claim(card) {
+            writeln!(err, "      {AQUA}note:{RESET} {}", n)?;
         }
     }
     if !yes {

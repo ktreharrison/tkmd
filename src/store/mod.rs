@@ -1367,6 +1367,60 @@ views:
         Ok(card)
     }
 
+    /// Append a note to a card's execution log, and nothing else: spec, DoD, eval, owner and
+    /// status are untouched. Lets agents explain drift ("built X instead of Y because ...")
+    /// without editing what they are judged against. Refused on done and archived cards.
+    pub fn add_note(
+        &self,
+        query: &str,
+        actor: &str,
+        note: &str,
+        session_id: Option<&str>,
+    ) -> Result<TaskCard> {
+        let note = note.split_whitespace().collect::<Vec<_>>().join(" ");
+        if note.is_empty() {
+            bail!("Note cannot be empty");
+        }
+        if note.chars().count() > MAX_NOTE_CHARS {
+            bail!("Note is longer than {} characters", MAX_NOTE_CHARS);
+        }
+        let found = self.find_task(query)?;
+        let _lock = Self::lock_card(Path::new(&found.path))?;
+        let mut card = Self::read_card(Path::new(&found.path))?;
+        card.scope = found.scope;
+        if matches!(card.meta.status, TaskStatus::Done | TaskStatus::Archived) {
+            bail!(
+                "{} is `{}`; notes are only accepted on open tasks",
+                card.meta.id,
+                card.meta.status.as_str()
+            );
+        }
+        let actor = actor.trim().trim_start_matches('@');
+        let now_ts = Local::now().format("%Y-%m-%d %H:%M").to_string();
+        card.body = format!(
+            "{}\n- `{}`: {}`{}`: {}",
+            card.body.trim_end(),
+            now_ts,
+            NOTE_MARKER,
+            actor,
+            note
+        );
+        card.meta.updated = Local::now().format("%Y-%m-%d").to_string();
+        self.write_card(&card)?;
+        let status = card.meta.status.as_str().to_string();
+        self.log_event(
+            &card.meta.id,
+            "note",
+            actor,
+            session_id,
+            Some(&status),
+            &status,
+            None,
+            &card.meta.title,
+        )?;
+        Ok(card)
+    }
+
     /// Add dependency: `dependent_id` will be blocked by `blocker_ids`.
     pub fn add_dependency(&self, dependent_id: &str, blocker_ids: &[String]) -> Result<TaskCard> {
         // One graph-wide lock: validation and every card write happen as one transaction, so
@@ -1815,6 +1869,26 @@ pub fn fuzzy_score(text: &str, query: &str) -> Option<i64> {
 
 /// Replace a card body's details: the text after the `# Title` line and before the first
 /// `## ` section. Empty `details` removes the text. Sections and the log are kept as they are.
+/// Longest note `add_note` accepts, in characters.
+pub const MAX_NOTE_CHARS: usize = 2000;
+/// Execution-log prefix that marks a note line.
+const NOTE_MARKER: &str = "Note by ";
+
+/// Notes added since the card was last claimed (all notes if it was never claimed), as
+/// `` `timestamp`: Note by `actor`: text `` lines, oldest first.
+pub fn notes_since_claim(card: &TaskCard) -> Vec<String> {
+    let lines: Vec<&str> = card.body.lines().collect();
+    let start = lines
+        .iter()
+        .rposition(|l| l.contains(": Claimed by `"))
+        .map_or(0, |i| i + 1);
+    lines[start..]
+        .iter()
+        .filter(|l| l.starts_with("- `") && l.contains(&format!(": {}`", NOTE_MARKER)))
+        .map(|l| l.trim_start_matches("- ").to_string())
+        .collect()
+}
+
 pub(crate) fn replace_details(body: &str, details: &str) -> String {
     let details = details.trim();
     let (head, rest) = match body

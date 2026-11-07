@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`tk eval --dry-run <ids>`** checks an eval without running it: shell syntax of the command and of any script it runs (`sh check.sh`), that programs, scripts and absolute `cd` targets exist (inside the named script too), and which files the first claim will pin. It writes no card, receipt or event and exits `1` when it finds a problem. The first claim pins the check, so this is the step before `tk c`.
 - **`tk set <id> -d "<text>"`** replaces a card's details (the text between `# Title` and the first `## ` section), matching `tk add -d`. `-d ""` clears it. Like a DoD change, it sends a `pending-close` task back to `in-progress`.
+- **`tk note <id> <text>` and MCP `task_note`** append one line to a card's execution log and log a `note` event. They never touch the spec, DoD, eval, owner or status, refuse done and archived cards, and cap notes at 2,000 characters. `tk d` lists notes added since the claim, so an agent can explain why its work differs from the spec without editing the spec. `tk h` shows `✎ note` events.
 - **`[policy] assign_on_claim`** (default `false`): new tasks without `@owner` stay unassigned until the first `tk c` assigns them, and `tk ls` shows `—` for them. With the default, new tasks still belong to the configured owner.
 
 ### Changed
