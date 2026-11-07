@@ -1972,6 +1972,8 @@ fn test_update_details_replaces_spec_and_keeps_sections() {
     );
     assert!(card.body.contains("## Automated Eval"));
     assert!(card.body.contains("details replaced"));
+    let saved = store.find_task("1").unwrap();
+    assert_eq!(saved.body.trim_end(), card.body.trim_end());
 
     let cleared = store
         .update_task(
@@ -1986,6 +1988,8 @@ fn test_update_details_replaces_spec_and_keeps_sections() {
         )
         .unwrap();
     assert!(!cleared.body.contains("new spec"));
+    let saved = store.find_task("1").unwrap();
+    assert_eq!(saved.body.trim_end(), cleared.body.trim_end());
     assert!(
         cleared
             .body
@@ -2048,6 +2052,12 @@ fn test_assign_on_claim_leaves_new_tasks_unassigned() {
         .add_task("p1 nobody yet", None, vec![], None, None)
         .unwrap();
     assert_eq!(open.meta.owner, "");
+    let created = store.read_events().unwrap();
+    let created = created
+        .iter()
+        .rfind(|e| e.id == open.meta.id && e.action == "created")
+        .unwrap();
+    assert_eq!(created.actor, "ken", "creation event lost its actor");
     assert!(open.body.contains("Created unassigned"));
     let explicit = store
         .add_task("p1 for codex @codex", None, vec![], None, None)
@@ -2099,6 +2109,13 @@ fn test_eval_dry_run_checks_inside_named_script() {
 fn test_command_segments_keep_redirections() {
     let segs =
         crate::store::eval::command_segments_for_test("make > log 2>&1 && echo hi >&2; x &> out");
-    let programs: Vec<&str> = segs.iter().map(|w| w[0].as_str()).collect();
-    assert_eq!(programs, vec!["make", "echo", "x"]);
+    let expected: Vec<Vec<String>> = [
+        vec!["make", ">", "log", "2>&1"],
+        vec!["echo", "hi", ">&2"],
+        vec!["x", "&>", "out"],
+    ]
+    .iter()
+    .map(|seg| seg.iter().map(|w| w.to_string()).collect())
+    .collect();
+    assert_eq!(segs, expected);
 }

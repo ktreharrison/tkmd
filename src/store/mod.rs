@@ -825,10 +825,16 @@ views:
         };
         Self::sync_card_sessions(&mut card);
         self.write_card(&card)?;
+        // An unassigned task (`assign_on_claim`) is still created by someone.
+        let creator = if card.meta.owner.is_empty() {
+            self.config.default_owner.as_str()
+        } else {
+            card.meta.owner.as_str()
+        };
         self.log_event(
             &card.meta.id,
             "created",
-            &card.meta.owner,
+            creator,
             card.meta.session_id.as_deref(),
             None,
             "ready",
