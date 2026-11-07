@@ -194,6 +194,10 @@ pub struct Policy {
     /// when no AI agent session environment variables are present.
     #[serde(default)]
     pub allow_non_tty_yes: bool,
+    /// Leave new tasks unassigned unless `@owner` is given; the first `tk c` assigns them.
+    /// Off by default: new tasks belong to the configured owner.
+    #[serde(default)]
+    pub assign_on_claim: bool,
 }
 
 impl Default for Policy {
@@ -202,6 +206,7 @@ impl Default for Policy {
             require_eval: false,
             eval_timeout_secs: default_eval_timeout(),
             allow_non_tty_yes: false,
+            assign_on_claim: false,
         }
     }
 }

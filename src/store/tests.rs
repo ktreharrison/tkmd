@@ -47,6 +47,7 @@ fn test_update_task_properties() {
             Some("2026-10-25".to_string()),
             vec!["DoD 1".to_string(), "DoD 2".to_string()],
             Some("cargo check".to_string()),
+            None,
         )
         .unwrap();
 
@@ -103,7 +104,7 @@ fn test_concurrent_atomic_writes() {
         let card_id = card.meta.id.clone();
         let handle = std::thread::spawn(move || {
             let owner = format!("agent_{}", i);
-            let _ = s.update_task(&card_id, None, None, Some(owner), None, vec![], None);
+            let _ = s.update_task(&card_id, None, None, Some(owner), None, vec![], None, None);
         });
         handles.push(handle);
     }
@@ -655,6 +656,7 @@ fn test_eval_change_invalidates_review() {
             None,
             vec![],
             Some("true".to_string()),
+            None,
         )
         .unwrap();
     assert_eq!(updated.meta.status, TaskStatus::InProgress);
@@ -974,6 +976,7 @@ fn test_changing_the_eval_revokes_auto_accept() {
             None,
             vec![],
             Some("true".to_string()),
+            None,
         )
         .unwrap();
     assert!(
@@ -1275,7 +1278,16 @@ fn test_dod_change_invalidates_review() {
         .unwrap();
     store.submit_for_review("1", "claude", None, None).unwrap();
     let c = store
-        .update_task("1", None, None, None, None, vec!["weaker".into()], None)
+        .update_task(
+            "1",
+            None,
+            None,
+            None,
+            None,
+            vec!["weaker".into()],
+            None,
+            None,
+        )
         .unwrap();
     assert_eq!(c.meta.status, TaskStatus::InProgress);
     assert!(c.meta.receipt.is_none());
@@ -1460,7 +1472,16 @@ fn test_changing_the_eval_command_after_claim_blocks_sign_off() {
         .unwrap();
     store.claim_task("1", "claude", None, false).unwrap();
     store
-        .update_task("1", None, None, None, None, vec![], Some("true".into()))
+        .update_task(
+            "1",
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            Some("true".into()),
+            None,
+        )
         .unwrap();
     store.submit_for_review("1", "claude", None, None).unwrap();
     let err = store
@@ -1616,7 +1637,16 @@ fn test_direct_close_records_an_accepted_check_change() {
         .unwrap();
     store.claim_task("1", "ken", None, false).unwrap();
     store
-        .update_task("1", None, None, None, None, vec![], Some("true".into()))
+        .update_task(
+            "1",
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            Some("true".into()),
+            None,
+        )
         .unwrap();
     let card = store.find_task("1").unwrap();
     assert!(
@@ -1779,4 +1809,313 @@ fn test_archive_many_and_lockfile_cleanup() {
     // Bare prune removes every remaining done/archived card, including tk-003 in archive/.
     assert_eq!(store.prune_many(&[]).unwrap(), vec!["tk-003".to_string()]);
     let _ = fs::remove_dir_all(&tmp);
+}
+
+fn events_text(store: &TaskStore) -> String {
+    fs::read_to_string(store.tasks_path.join(".events.jsonl")).unwrap_or_default()
+}
+
+#[cfg(unix)]
+#[test]
+fn test_eval_dry_run_reports_without_running() {
+    let (store, tmp) = hardening_store("dry-run-clean");
+    write_check(&store, "touch ran.marker\nexit 0\n");
+    store
+        .add_task("p1 work", None, vec![], Some("sh check.sh".into()), None)
+        .unwrap();
+    let before_events = events_text(&store);
+    let before_card = fs::read_to_string(store.find_task("1").unwrap().path).unwrap();
+
+    let report = store.dry_run_eval("1").unwrap();
+
+    assert!(report.ok(), "unexpected problems: {:?}", report.problems);
+    assert!(
+        report.notes.iter().any(|n| n.contains("check.sh")),
+        "pinned script not reported: {:?}",
+        report.notes
+    );
+    assert!(
+        !tmp.join("ran.marker").exists(),
+        "dry-run executed the eval"
+    );
+    assert_eq!(
+        events_text(&store),
+        before_events,
+        "dry-run logged an event"
+    );
+    let after_card = fs::read_to_string(store.find_task("1").unwrap().path).unwrap();
+    assert_eq!(after_card, before_card, "dry-run wrote the card");
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_eval_dry_run_flags_bad_gates() {
+    let (store, tmp) = hardening_store("dry-run-bad");
+    // 1: absolute cd target and named script both missing
+    store
+        .add_task(
+            "p1 missing paths",
+            None,
+            vec![],
+            Some("cd /nonexistent-tkmd-dry-run-dir && sh missing.sh".into()),
+            None,
+        )
+        .unwrap();
+    // 2: the command itself does not parse
+    store
+        .add_task("p1 bad syntax", None, vec![], Some("if then".into()), None)
+        .unwrap();
+    // 3: the named script does not parse
+    write_check(&store, "if then fi\n");
+    store
+        .add_task(
+            "p1 bad script",
+            None,
+            vec![],
+            Some("sh check.sh".into()),
+            None,
+        )
+        .unwrap();
+    // 4: unknown program
+    store
+        .add_task(
+            "p1 unknown program",
+            None,
+            vec![],
+            Some("tkmd-no-such-program-xyz --run".into()),
+            None,
+        )
+        .unwrap();
+
+    let r1 = store.dry_run_eval("1").unwrap();
+    assert!(
+        r1.problems
+            .iter()
+            .any(|p| p.contains("cd /nonexistent-tkmd-dry-run-dir"))
+    );
+    assert!(r1.problems.iter().any(|p| p.contains("missing.sh")));
+    let r2 = store.dry_run_eval("2").unwrap();
+    assert!(
+        r2.problems.iter().any(|p| p.contains("does not parse")),
+        "{:?}",
+        r2.problems
+    );
+    let r3 = store.dry_run_eval("3").unwrap();
+    assert!(
+        r3.problems
+            .iter()
+            .any(|p| p.contains("check.sh") && p.contains("does not parse")),
+        "{:?}",
+        r3.problems
+    );
+    let r4 = store.dry_run_eval("4").unwrap();
+    assert!(
+        r4.problems
+            .iter()
+            .any(|p| p.contains("tkmd-no-such-program-xyz")),
+        "{:?}",
+        r4.problems
+    );
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_eval_dry_run_without_eval_follows_require_eval() {
+    let (mut store, tmp) = hardening_store("dry-run-no-eval");
+    store
+        .add_task("p1 no check", None, vec![], None, None)
+        .unwrap();
+    let lenient = store.dry_run_eval("1").unwrap();
+    assert!(lenient.ok());
+    assert!(lenient.notes.iter().any(|n| n.contains("no eval")));
+    store.config.policy.require_eval = true;
+    let strict = store.dry_run_eval("1").unwrap();
+    assert!(!strict.ok());
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_update_details_replaces_spec_and_keeps_sections() {
+    let (store, tmp) = hardening_store("update-details");
+    store
+        .add_task(
+            "p1 spec task",
+            Some("old spec text"),
+            vec!["item one".into()],
+            Some("exit 0".into()),
+            None,
+        )
+        .unwrap();
+    let card = store
+        .update_task(
+            "1",
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            None,
+            Some("new spec\n\nsecond paragraph".into()),
+        )
+        .unwrap();
+    assert!(card.body.contains("new spec\n\nsecond paragraph"));
+    assert!(!card.body.contains("old spec text"));
+    assert!(
+        card.body.starts_with("# spec task\n\nnew spec"),
+        "{}",
+        card.body
+    );
+    assert!(
+        card.body
+            .contains("## Definition of Done (DoD)\n- [ ] item one")
+    );
+    assert!(card.body.contains("## Automated Eval"));
+    assert!(card.body.contains("details replaced"));
+    let saved = store.find_task("1").unwrap();
+    assert_eq!(saved.body.trim_end(), card.body.trim_end());
+
+    let cleared = store
+        .update_task(
+            "1",
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            None,
+            Some(String::new()),
+        )
+        .unwrap();
+    assert!(!cleared.body.contains("new spec"));
+    let saved = store.find_task("1").unwrap();
+    assert_eq!(saved.body.trim_end(), cleared.body.trim_end());
+    assert!(
+        cleared
+            .body
+            .starts_with("# spec task\n\n## Definition of Done"),
+        "{}",
+        cleared.body
+    );
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_update_details_invalidates_pending_review() {
+    let (store, tmp) = hardening_store("update-details-review");
+    store
+        .add_task(
+            "p1 reviewed",
+            Some("spec"),
+            vec![],
+            Some("exit 0".into()),
+            None,
+        )
+        .unwrap();
+    store.claim_task("1", "claude", None, false).unwrap();
+    store.submit_for_review("1", "claude", None, None).unwrap();
+    let card = store
+        .update_task(
+            "1",
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            None,
+            Some("changed spec".into()),
+        )
+        .unwrap();
+    assert_eq!(card.meta.status, TaskStatus::InProgress);
+    assert!(card.meta.receipt.is_none());
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_replace_details_without_sections() {
+    assert_eq!(replace_details("# T\n\nold\n", "new"), "# T\n\nnew\n");
+    assert_eq!(replace_details("# T\n", "new"), "# T\n\nnew\n");
+    assert_eq!(replace_details("# T\n\nold\n", ""), "# T\n");
+}
+
+#[test]
+fn test_assign_on_claim_leaves_new_tasks_unassigned() {
+    let (mut store, tmp) = hardening_store("assign-on-claim");
+    // Default policy: new tasks belong to the configured owner, as before.
+    let owned = store
+        .add_task("p1 default owner", None, vec![], None, None)
+        .unwrap();
+    assert_eq!(owned.meta.owner, "ken");
+
+    store.config.policy.assign_on_claim = true;
+    let open = store
+        .add_task("p1 nobody yet", None, vec![], None, None)
+        .unwrap();
+    assert_eq!(open.meta.owner, "");
+    let created = store.read_events().unwrap();
+    let created = created
+        .iter()
+        .rfind(|e| e.id == open.meta.id && e.action == "created")
+        .unwrap();
+    assert_eq!(created.actor, "ken", "creation event lost its actor");
+    assert!(open.body.contains("Created unassigned"));
+    let explicit = store
+        .add_task("p1 for codex @codex", None, vec![], None, None)
+        .unwrap();
+    assert_eq!(explicit.meta.owner, "codex");
+
+    let claimed = store
+        .claim_task(&open.meta.id, "claude", None, false)
+        .unwrap();
+    assert_eq!(claimed.meta.owner, "claude");
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_eval_dry_run_checks_inside_named_script() {
+    let (store, tmp) = hardening_store("dry-run-in-script");
+    write_check(
+        &store,
+        "#!/bin/sh\nhelper() { true; }\nset -e\ncd /nonexistent-tkmd-script-dir && helper\n",
+    );
+    store
+        .add_task(
+            "p1 scripted",
+            None,
+            vec![],
+            Some("sh check.sh".into()),
+            None,
+        )
+        .unwrap();
+    let report = store.dry_run_eval("1").unwrap();
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|p| p.contains("in `check.sh`") && p.contains("/nonexistent-tkmd-script-dir")),
+        "{:?}",
+        report.problems
+    );
+    assert!(
+        !report.problems.iter().any(|p| p.contains("helper")),
+        "script-defined function flagged: {:?}",
+        report.problems
+    );
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_command_segments_keep_redirections() {
+    let segs =
+        crate::store::eval::command_segments_for_test("make > log 2>&1 && echo hi >&2; x &> out");
+    let expected: Vec<Vec<String>> = [
+        vec!["make", ">", "log", "2>&1"],
+        vec!["echo", "hi", ">&2"],
+        vec!["x", "&>", "out"],
+    ]
+    .iter()
+    .map(|seg| seg.iter().map(|w| w.to_string()).collect())
+    .collect();
+    assert_eq!(segs, expected);
 }

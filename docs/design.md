@@ -140,7 +140,10 @@ Who is calling does not come from the `--actor` name. Approval is decided by how
 require_eval = true         # no-eval tasks cannot reach pending-close
 eval_timeout_secs = 600     # kill a hung eval (and its children); 0 = no limit
 allow_non_tty_yes = false   # allow `tk d -y` / `tk auto -y` in Raycast/Obsidian when no agent env vars exist
+assign_on_claim = false     # leave new tasks unassigned unless `@owner` is given; `tk c` assigns them
 ```
+
+Because the first claim pins the check, run `tk eval --dry-run <id>` before `tk c`. It runs the shell's syntax check on the eval and on any script the eval runs, checks that programs, scripts and absolute `cd` targets exist, and lists the files the claim will pin. It runs nothing and writes no card, receipt or event.
 
 Concurrent agents are serialized with an advisory `flock` per card on Unix, plus a store-wide lock for id allocation and dependency edits. On Windows the locks are no-ops.
 

@@ -717,7 +717,10 @@ views:
         eval: Option<String>,
         session_id: Option<String>,
     ) -> Result<TaskCard> {
-        let parsed = parse_todotxt(raw_input, &self.config.default_owner);
+        let mut parsed = parse_todotxt(raw_input, &self.config.default_owner);
+        if self.config.policy.assign_on_claim && parse_todotxt(raw_input, "").owner.is_empty() {
+            parsed.owner = String::new();
+        }
         if parsed.title.is_empty() {
             bail!("Task title cannot be empty");
         }
@@ -804,9 +807,14 @@ views:
             .resume_command()
             .map(|cmd| format!(" (resume: `{}`)", cmd))
             .unwrap_or_default();
+        let assignment = if meta.owner.is_empty() {
+            "unassigned (the first claim assigns it)".to_string()
+        } else {
+            format!("and assigned to `{}`", meta.owner)
+        };
         sections.push_str(&format!(
-            "\n## Execution Log\n- Created and assigned to `{}`{}.",
-            meta.owner, session_note
+            "\n## Execution Log\n- Created {}{}.",
+            assignment, session_note
         ));
 
         let mut card = TaskCard {
@@ -817,10 +825,16 @@ views:
         };
         Self::sync_card_sessions(&mut card);
         self.write_card(&card)?;
+        // An unassigned task (`assign_on_claim`) is still created by someone.
+        let creator = if card.meta.owner.is_empty() {
+            self.config.default_owner.as_str()
+        } else {
+            card.meta.owner.as_str()
+        };
         self.log_event(
             &card.meta.id,
             "created",
-            &card.meta.owner,
+            creator,
             card.meta.session_id.as_deref(),
             None,
             "ready",
@@ -1198,7 +1212,10 @@ views:
         Ok(())
     }
 
-    /// Update properties on a task card (title, priority, owner, due, dod, eval).
+    /// Update properties on a task card (title, priority, owner, due, dod, eval, details).
+    /// `new_details` replaces the text between the `# Title` line and the first `## ` section;
+    /// like a DoD change, new details invalidate a pending review.
+    #[allow(clippy::too_many_arguments)]
     pub fn update_task(
         &self,
         query: &str,
@@ -1208,6 +1225,7 @@ views:
         new_due: Option<String>,
         new_dod: Vec<String>,
         new_eval: Option<String>,
+        new_details: Option<String>,
     ) -> Result<TaskCard> {
         let mut card = self.find_task(query)?;
         let _lock = Self::lock_card(Path::new(&card.path))?;
@@ -1318,9 +1336,21 @@ views:
             }
         }
 
+        if let Some(details) = new_details {
+            card.body = replace_details(&card.body, &details);
+            changes.push("details replaced".to_string());
+            if card.meta.status == TaskStatus::PendingClose {
+                card.meta.status = TaskStatus::InProgress;
+                card.meta.receipt = None;
+                changes.push(
+                    "status -> in-progress (review invalidated by details change)".to_string(),
+                );
+            }
+        }
+
         if changes.is_empty() {
             bail!(
-                "No updates specified. Use --title, --priority, --owner, --due, --dod, or --eval"
+                "No updates specified. Use --title, --priority, --owner, --due, --dod, --eval, or --details"
             );
         }
 
@@ -1781,6 +1811,41 @@ pub fn fuzzy_score(text: &str, query: &str) -> Option<i64> {
     }
 
     Some(total_score)
+}
+
+/// Replace a card body's details: the text after the `# Title` line and before the first
+/// `## ` section. Empty `details` removes the text. Sections and the log are kept as they are.
+pub(crate) fn replace_details(body: &str, details: &str) -> String {
+    let details = details.trim();
+    let (head, rest) = match body
+        .find("# ")
+        .filter(|&i| i == 0 || body[..i].ends_with('\n'))
+    {
+        Some(h1) => {
+            let line_end = body[h1..].find('\n').map_or(body.len(), |n| h1 + n);
+            (&body[..line_end], &body[line_end..])
+        }
+        None => ("", body),
+    };
+    let tail = match rest.find("\n## ") {
+        Some(i) => &rest[i + 1..],
+        None if rest.trim_start().starts_with("## ") => rest.trim_start(),
+        None => "",
+    };
+    let mut out = head.trim_end().to_string();
+    if !details.is_empty() {
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(details);
+    }
+    if !tail.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(tail);
+    } else {
+        out.push('\n');
+    }
+    out
 }
 
 pub fn slugify(title: &str) -> String {

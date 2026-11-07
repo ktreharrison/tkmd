@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`tk eval --dry-run <ids>`** checks an eval without running it: shell syntax of the command and of any script it runs (`sh check.sh`), that programs, scripts and absolute `cd` targets exist (inside the named script too), and which files the first claim will pin. It writes no card, receipt or event and exits `1` when it finds a problem. The first claim pins the check, so this is the step before `tk c`.
+- **`tk set <id> -d "<text>"`** replaces a card's details (the text between `# Title` and the first `## ` section), matching `tk add -d`. `-d ""` clears it. Like a DoD change, it sends a `pending-close` task back to `in-progress`.
+- **`[policy] assign_on_claim`** (default `false`): new tasks without `@owner` stay unassigned until the first `tk c` assigns them, and `tk ls` shows `—` for them. With the default, new tasks still belong to the configured owner.
+
+### Changed
+- `TaskStore::update_task` takes a final `new_details: Option<String>` argument.
+
 ## [0.2.3] - 2026-11-01
 
 ### Added

@@ -218,6 +218,7 @@ In merged view (`tk -A`), task IDs display distinct scope indicators (`tk-001L` 
 | `tk claim 1 --owner claude -s 8y9380573586` | `tk c 1` | Claim `tk-001` (`status: in-progress`) and attach agent `session_id` |
 | `tk resume 1` | `tk u 1` | Resume the AI agent session attached to `tk-001` (`claude -r <id>`, `codex resume <id>`, etc.) |
 | `tk eval 1` | `tk eval 1` | Execute the card's `eval` shell command and log `[PASS]` / `[FAIL]` |
+| `tk eval --dry-run 1` | `tk eval --dry-run 1` | Check the eval without running it (syntax, programs, scripts, `cd` targets, files the claim will pin); writes nothing |
 | `tk find [query]` / `tk find -i` | `tk f` | Fuzzy search tasks (inline table or interactive `fzf` picker + `bat` preview) |
 | `tk history [id]` | `tk h` | Event audit log from `tasks/.events.jsonl` with step duration deltas |
 | `tk stats` | `tk st` | Flow telemetry: Little's Law, MTTC, P50/P90/TPM90, agent split, yield |
@@ -225,7 +226,7 @@ In merged view (`tk -A`), task IDs display distinct scope indicators (`tk-001L` 
 | `tk dep [id] --needs [ids]` | `tk dep` | Dependencies: CPM table (`--cpm`), text summaries (`--short`, `--long`, `--summary`), colored JSON (`--json`), tree, DSM (`--dsm`), Gantt (`--gantt`), AON (`--aon`) |
 | `tk archive [id]` | `tk archive` | Move completed tasks to `tasks/archive/` (preserves `.events.jsonl` DB) |
 | `tk prune [id] [-f]` | `tk prune` | Remove completed/archived cards from disk (preserves `.events.jsonl` DB) |
-| `tk set 1 -t "Title" -p p0` | `tk set 1` | Update title, priority, owner, due, DoD, or eval directly from CLI |
+| `tk set 1 -t "Title" -p p0` | `tk set 1` | Update title, priority, owner, due, DoD, eval, or details (`-d`) directly from CLI |
 | `tk edit 1` | `tk e 1` | Edit the Markdown card in `$EDITOR` (`hx`) |
 | `tk open` / `tk open 1` | `tk o` / `tk o 1` | Open `bases/tasks.base` (or `tk-001`) in Obsidian (or `$EDITOR` in CLI mode) |
 

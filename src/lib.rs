@@ -164,6 +164,10 @@ enum Commands {
         /// Who is running the eval. Defaults to the configured owner.
         #[arg(short, long)]
         actor: Option<String>,
+        /// Check the eval without running it: shell syntax, named programs and scripts, absolute
+        /// `cd` targets, and which files the first claim will pin. Writes nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Submit task(s) to pending-close (tk r 1 2) or view pending sign-off review queue (tk r / tk review)
     #[command(visible_alias = "r", alias = "rev")]
@@ -210,7 +214,7 @@ enum Commands {
         /// Task ID (e.g. 1 or tk-001)
         id: String,
     },
-    /// Update task title, priority, owner, due date, DoD, or eval directly (alias: `set`)
+    /// Update task title, priority, owner, due date, DoD, eval, or details directly (alias: `set`)
     #[command(visible_alias = "set")]
     Update {
         /// Task ID (e.g. 1 or tk-001)
@@ -233,6 +237,9 @@ enum Commands {
         /// Update automated eval shell command
         #[arg(long)]
         eval: Option<String>,
+        /// Replace the details / specification text (as `tk add -d`); pass "" to clear it
+        #[arg(short, long)]
+        details: Option<String>,
     },
     /// Open a task card or Kanban board in Obsidian (or $EDITOR in CLI mode) (alias: `o`)
     #[command(visible_alias = "o")]
@@ -525,6 +532,9 @@ fn color_status_compact(st: &TaskStatus) -> String {
 }
 
 fn color_owner(owner: &str, width: usize) -> String {
+    if owner.is_empty() {
+        return format!("{DIM}{:<width$}{RESET}", "—", width = width);
+    }
     let truncated = truncate_str(owner, width.saturating_sub(1));
     let padded = format!("@{:<w$}", truncated, w = width.saturating_sub(1));
     if model::is_human(owner) {
@@ -1329,7 +1339,37 @@ pub fn run() -> Result<()> {
                 }
             }
         }
-        Commands::Eval { ids, actor } => {
+        Commands::Eval {
+            ids, dry_run: true, ..
+        } => {
+            let mut any_problem = false;
+            for id in &ids {
+                let report = store.dry_run_eval(id)?;
+                if report.ok() {
+                    println!(
+                        "{GREEN}✅ Dry-run OK{RESET} for {BOLD}{}{RESET} (nothing was run)",
+                        report.card.meta.id
+                    );
+                } else {
+                    any_problem = true;
+                    println!(
+                        "{RED}❌ Dry-run found {} problem(s){RESET} for {BOLD}{}{RESET} (nothing was run)",
+                        report.problems.len(),
+                        report.card.meta.id
+                    );
+                }
+                for p in &report.problems {
+                    println!("   {RED}✖{RESET} {}", p);
+                }
+                for n in &report.notes {
+                    println!("   {DIM}•{RESET} {}", n);
+                }
+            }
+            if any_problem {
+                std::process::exit(1);
+            }
+        }
+        Commands::Eval { ids, actor, .. } => {
             let actor = actor.unwrap_or_else(|| store.config.default_owner.clone());
             let mut any_failed = false;
             for id in &ids {
@@ -1454,8 +1494,9 @@ pub fn run() -> Result<()> {
             due,
             dod,
             eval,
+            details,
         } => {
-            let card = store.update_task(&id, title, priority, owner, due, dod, eval)?;
+            let card = store.update_task(&id, title, priority, owner, due, dod, eval, details)?;
             println!(
                 "{GREEN}✏️  Updated{RESET} {BOLD}{}{RESET} ({})",
                 card.meta.id, card.meta.title
