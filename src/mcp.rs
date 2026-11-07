@@ -204,6 +204,20 @@ fn handle_message(store: &TaskStore, payload: &str) -> Option<Value> {
                         }
                     },
                     {
+                        "name": "task_note",
+                        "description": "Append a note to a task's execution log, e.g. to explain why the work differs from the spec. Does not change the spec, DoD, eval, owner or status. Shown to Ken at sign-off.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string", "description": "Task ID (e.g. tk-001)" },
+                                "note": { "type": "string", "description": "Note text (max 2000 characters)" },
+                                "actor": { "type": "string", "description": "Agent writing the note" },
+                                "session_id": { "type": "string", "description": "Agent session ID or resume command" }
+                            },
+                            "required": ["id", "note"]
+                        }
+                    },
+                    {
                         "name": "task_complete",
                         "description": "Finish your work on a task. Agents cannot mark tasks done: this runs eval and submits to pending-close for human sign-off. It fails if the task is already awaiting sign-off.",
                         "inputSchema": {
@@ -408,6 +422,17 @@ fn handle_tool_call(store: &TaskStore, name: &str, args: &Value) -> Result<Strin
             let card = store.submit_for_review(id, actor, note, session_id)?;
             Ok(serde_json::to_string_pretty(&card)?)
         }
+        "task_note" => {
+            let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let note = args.get("note").and_then(|v| v.as_str()).unwrap_or("");
+            let actor = args
+                .get("actor")
+                .and_then(|v| v.as_str())
+                .unwrap_or("agent");
+            let session_id = args.get("session_id").and_then(|v| v.as_str());
+            let card = store.add_note(id, actor, note, session_id)?;
+            Ok(serde_json::to_string_pretty(&card)?)
+        }
         "task_complete" => {
             let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
             let actor = args
@@ -533,6 +558,28 @@ mod tests {
         let cpm_val: Value = serde_json::from_str(&cpm_res).unwrap();
         assert_eq!(cpm_val["project_duration_seconds"], 3600);
 
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_mcp_task_note() {
+        let (store, tmp) = setup_test_store("task-note");
+        handle_tool_call(
+            &store,
+            "task_add",
+            &json!({ "shorthand": "p1 noted via MCP", "eval": "exit 0" }),
+        )
+        .expect("task_add failed");
+        handle_tool_call(
+            &store,
+            "task_note",
+            &json!({ "id": "tk-001", "note": "built X instead of Y", "actor": "codex" }),
+        )
+        .expect("task_note failed");
+        let card = store.find_task("1").unwrap();
+        assert!(card.body.contains("Note by `codex`: built X instead of Y"));
+        assert_eq!(card.meta.eval.as_deref(), Some("exit 0"));
+        assert!(handle_tool_call(&store, "task_note", &json!({ "id": "tk-001" })).is_err());
         let _ = fs::remove_dir_all(&tmp);
     }
 

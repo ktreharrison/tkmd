@@ -2119,3 +2119,91 @@ fn test_command_segments_keep_redirections() {
     .collect();
     assert_eq!(segs, expected);
 }
+
+#[test]
+fn test_task_note_appends_only() {
+    let (store, tmp) = hardening_store("task-note-append");
+    store
+        .add_task(
+            "p1 noted work",
+            Some("the spec"),
+            vec!["criterion".into()],
+            Some("exit 0".into()),
+            None,
+        )
+        .unwrap();
+    store.claim_task("1", "claude", None, false).unwrap();
+    let before = store.find_task("1").unwrap();
+
+    let after = store
+        .add_note(
+            "1",
+            "claude",
+            "built X instead of Y\nbecause Z",
+            Some("sess-1"),
+        )
+        .unwrap();
+
+    // Only the log grew: spec, DoD, eval, owner and status are unchanged.
+    assert!(after.body.starts_with(before.body.trim_end()));
+    assert!(
+        after
+            .body
+            .trim_end()
+            .ends_with("Note by `claude`: built X instead of Y because Z")
+    );
+    assert_eq!(after.meta.dod, before.meta.dod);
+    assert_eq!(after.meta.eval, before.meta.eval);
+    assert_eq!(after.meta.owner, before.meta.owner);
+    assert_eq!(after.meta.status, before.meta.status);
+    assert!(after.body.contains("the spec"));
+
+    let events = store.read_events().unwrap();
+    let last = events.last().unwrap();
+    assert_eq!(last.action, "note");
+    assert_eq!(last.actor, "claude");
+    assert_eq!(last.session_id.as_deref(), Some("sess-1"));
+    assert_eq!(last.to_status, "in-progress");
+    assert!(store.integrity_report().unwrap().is_empty());
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_task_note_refusals() {
+    let (store, tmp) = hardening_store("task-note-refuse");
+    store.add_task("p1 open", None, vec![], None, None).unwrap();
+    assert!(store.add_note("1", "claude", "   ", None).is_err());
+    let long = "x".repeat(MAX_NOTE_CHARS + 1);
+    assert!(store.add_note("1", "claude", &long, None).is_err());
+
+    store.submit_for_review("1", "ken", None, None).unwrap();
+    store
+        .complete_task_with("1", "ken", None, Approval::Interactive)
+        .unwrap();
+    let err = store.add_note("1", "claude", "too late", None).unwrap_err();
+    assert!(err.to_string().contains("done"), "{}", err);
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_task_note_notes_since_claim() {
+    let (store, tmp) = hardening_store("task-note-since-claim");
+    store
+        .add_task("p1 reclaimed", None, vec![], None, None)
+        .unwrap();
+    store
+        .add_note("1", "ken", "before any claim", None)
+        .unwrap();
+    let unclaimed = store.find_task("1").unwrap();
+    assert_eq!(notes_since_claim(&unclaimed).len(), 1);
+
+    store.claim_task("1", "claude", None, false).unwrap();
+    store.add_note("1", "claude", "first drift", None).unwrap();
+    store.add_note("1", "claude", "second drift", None).unwrap();
+    let card = store.find_task("1").unwrap();
+    let notes = notes_since_claim(&card);
+    assert_eq!(notes.len(), 2, "{:?}", notes);
+    assert!(notes[0].ends_with("first drift"));
+    assert!(notes[1].ends_with("second drift"));
+    let _ = fs::remove_dir_all(&tmp);
+}

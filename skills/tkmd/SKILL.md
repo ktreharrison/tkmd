@@ -36,6 +36,7 @@ All active tasks live as atomic Markdown cards in `tasks/tk-XXX-*.md` (and rende
    - **CRITICAL RULE**: AI agents **MUST NOT** mark tasks as `done` (`tk d`). Agents **MUST** submit finished work to `pending-close` using `tk r` (`tk review`) once `tk eval` passes.
    - `tk d` and MCP `task_complete` from an agent route the task to `pending-close`; on a task already in `pending-close` they fail. Passing `--actor <owner>` does not change this: sign-off needs a person at a terminal.
    - Do not claim a task another owner is working on. `tk c` refuses it; use `--force` only when the human asks you to take it over.
+   - If your work differs from the spec, say so with a note instead of editing the card: `tk note <id> -a <agent-name> "built X instead of Y because ..."` (MCP `task_note`). Ken sees notes at sign-off.
    - Do not change a task's `eval` to make it pass. Changing `eval` invalidates the review, revokes any auto-accept, and the human sees the change.
    - For routine work with a good check, ask the human to run `tk auto <id>`: then your passing submit closes the task with no sign-off wait. You cannot turn auto-accept on yourself.
    - Only the task's owner can submit claimed work. Use ids (`tk r 7`), not name fragments: an ambiguous fragment is an error listing the matches.

@@ -269,6 +269,7 @@ Primary MCP tools:
 - `task_claim`: Assign an agent and record a session ID.
 - `task_eval`: Run automated shell test commands.
 - `task_submit_review`: Move a task to `pending-close` with notes and artifact links.
+- `task_note`: Append a note to a task's execution log (for example, why the work differs from the spec). It cannot change the spec, DoD, eval, owner or status; `tk d` shows notes added since the claim. This is the only write an agent has on a card's content: MCP has no update tool, so an agent cannot edit what it is judged against.
 - `task_list` returns compact summaries (no body) unless `detail: "full"`; `limit` caps the count. `task_get` returns one full card.
 - `task_cpm`: Return project duration, critical path sequence, and task buffers.
 

@@ -618,3 +618,19 @@ fn review_reports_auto_acceptance_truthfully() {
         out
     );
 }
+
+#[test]
+fn task_note_cli_accepts_flags_after_the_text() {
+    let sb = Sandbox::new("note-cli");
+    sb.ok(&["add", "p1 card with a note"]);
+    sb.ok(&[
+        "note", "1", "built", "X", "instead", "of", "Y", "-a", "claude",
+    ]);
+    let (_, text) = sb.cards().into_iter().next().unwrap();
+    assert!(
+        text.contains("Note by `claude`: built X instead of Y"),
+        "note not appended as expected:\n{}",
+        text
+    );
+    assert!(!text.contains("-a claude"));
+}
