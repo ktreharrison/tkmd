@@ -1,6 +1,6 @@
 [package]
 name = "tkmd"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 description = "Deterministic Program Management Engine & Multi-Agent MCP Server"
 license = "MIT OR Apache-2.0"
