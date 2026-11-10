@@ -16,6 +16,7 @@ fn test_update_task_properties() {
         obsidian_vault_name: None,
         editor: None,
         policy: Policy::default(),
+        hooks: Hooks::default(),
     };
 
     let store = TaskStore {
@@ -80,6 +81,7 @@ fn test_concurrent_atomic_writes() {
         obsidian_vault_name: None,
         editor: None,
         policy: Policy::default(),
+        hooks: Hooks::default(),
     };
 
     let store = std::sync::Arc::new(TaskStore {
@@ -140,6 +142,7 @@ fn test_local_vs_global_aggregation() {
         obsidian_vault_name: None,
         editor: None,
         policy: Policy::default(),
+        hooks: Hooks::default(),
     };
     let cfg_local = AppConfig {
         mode: "cli".to_string(),
@@ -151,6 +154,7 @@ fn test_local_vs_global_aggregation() {
         obsidian_vault_name: None,
         editor: None,
         policy: Policy::default(),
+        hooks: Hooks::default(),
     };
 
     let global_store = TaskStore {
@@ -227,6 +231,7 @@ fn test_eval_gate_blocks_failing_command() {
         obsidian_vault_name: None,
         editor: None,
         policy: Policy::default(),
+        hooks: Hooks::default(),
     };
 
     let store = TaskStore {
@@ -281,6 +286,7 @@ fn test_eval_gate_passes_valid_command() {
         obsidian_vault_name: None,
         editor: None,
         policy: Policy::default(),
+        hooks: Hooks::default(),
     };
 
     let store = TaskStore {
@@ -337,6 +343,7 @@ fn test_agent_guardrail_cannot_mark_done() {
         obsidian_vault_name: None,
         editor: None,
         policy: Policy::default(),
+        hooks: Hooks::default(),
     };
 
     let store = TaskStore {
@@ -393,6 +400,7 @@ fn test_human_sign_off_marks_done_and_checks_dod() {
         obsidian_vault_name: None,
         editor: None,
         policy: Policy::default(),
+        hooks: Hooks::default(),
     };
 
     let store = TaskStore {
@@ -478,6 +486,7 @@ fn hardening_store(name: &str) -> (TaskStore, PathBuf) {
         obsidian_vault_name: None,
         editor: None,
         policy: Policy::default(),
+        hooks: Hooks::default(),
     };
     let store = TaskStore {
         tasks_path: tmp.join("tasks"),
@@ -2206,4 +2215,199 @@ fn test_task_note_notes_since_claim() {
     assert!(notes[0].ends_with("first drift"));
     assert!(notes[1].ends_with("second drift"));
     let _ = fs::remove_dir_all(&tmp);
+}
+
+/// A CLI-mode store in its own temp dir, with `hooks` as its config's `[hooks]` table.
+fn hook_store(name: &str, scope: CardScope, hooks: Hooks) -> (TaskStore, PathBuf) {
+    let tmp = std::env::temp_dir().join(format!("tkmd-hook-{}-{}", name, std::process::id()));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(tmp.join("tasks")).unwrap();
+    let store = TaskStore {
+        tasks_path: tmp.join("tasks"),
+        daily_path: tmp.clone(),
+        config: AppConfig {
+            mode: "cli".to_string(),
+            vault_path: tmp.to_string_lossy().to_string(),
+            tasks_dir: "tasks".to_string(),
+            base_file: String::new(),
+            daily_dir: String::new(),
+            default_owner: "ken".to_string(),
+            obsidian_vault_name: None,
+            editor: None,
+            policy: Policy::default(),
+            hooks,
+        },
+        scope,
+        peer: None,
+        active_scope: if scope == CardScope::Local {
+            ScopeSelection::Local
+        } else {
+            ScopeSelection::Global
+        },
+        uninitialized_git_repo: None,
+        is_uninitialized_local: false,
+    };
+    (store, tmp)
+}
+
+fn on_done(cmd: &str) -> Hooks {
+    Hooks {
+        on_done: Some(cmd.to_string()),
+        ..Hooks::default()
+    }
+}
+
+#[test]
+fn test_hooks_off_by_default_and_absent_from_new_configs() {
+    let cfg: AppConfig = toml::from_str(
+        "mode = \"cli\"\nvault_path = \".\"\ntasks_dir = \"tasks\"\ndefault_owner = \"ken\"\n",
+    )
+    .unwrap();
+    assert_eq!(cfg.hooks, Hooks::default());
+    assert!(cfg.hooks.on_done.is_none());
+    assert_eq!(cfg.hooks.hook_timeout_secs, 30);
+    // A default config file does not grow a [hooks] table.
+    assert!(!toml::to_string_pretty(&cfg).unwrap().contains("[hooks]"));
+
+    let (store, tmp) = hook_store("off", CardScope::Global, Hooks::default());
+    let card = store
+        .add_task("Plain task @ken", None, vec![], None, None)
+        .unwrap();
+    assert_eq!(
+        store.run_on_done_hook(&card),
+        hooks::HookOutcome::NotConfigured
+    );
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_hooks_parse_from_user_config() {
+    let cfg: AppConfig = toml::from_str(
+        "mode = \"cli\"\nvault_path = \".\"\ntasks_dir = \"tasks\"\ndefault_owner = \"ken\"\n\n[hooks]\non_done = \"~/bin/tk-queue\"\nhook_timeout_secs = 5\n",
+    )
+    .unwrap();
+    assert_eq!(cfg.hooks.on_done.as_deref(), Some("~/bin/tk-queue"));
+    assert_eq!(cfg.hooks.hook_timeout_secs, 5);
+    assert!(toml::to_string_pretty(&cfg).unwrap().contains("[hooks]"));
+}
+
+#[test]
+fn test_on_done_hook_runs_after_sign_off_with_env_and_stdin() {
+    let (mut store, tmp) = hook_store("runs", CardScope::Global, Hooks::default());
+    let out = tmp.join("hook-out.txt");
+    store.config.hooks = on_done(&format!(
+        "printf '%s|%s|%s|%s\\n' \"$TK_EVENT\" \"$TK_ID\" \"$TK_CARD\" \"$TK_BOARD\" > '{0}'; cat >> '{0}'",
+        out.display()
+    ));
+    let card = store
+        .add_task(
+            "Hooked task @ken",
+            None,
+            vec![],
+            Some("exit 0".to_string()),
+            None,
+        )
+        .unwrap();
+
+    // Submitting for review is not a sign-off: the hook must not run.
+    store.submit_for_review("1", "agent", None, None).unwrap();
+    assert!(!out.exists(), "hook ran on pending-close");
+
+    let done = store
+        .complete_task_with("1", "ken", None, Approval::Interactive)
+        .unwrap();
+    assert_eq!(done.meta.status, TaskStatus::Done);
+
+    let written = fs::read_to_string(&out).expect("hook did not run on done");
+    let mut lines = written.lines();
+    let env_line = lines.next().unwrap();
+    assert_eq!(
+        env_line,
+        format!(
+            "done|{}|{}|{}",
+            card.meta.id, done.path, store.config.vault_path
+        )
+    );
+    let payload: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    assert_eq!(payload["event"], "done");
+    assert_eq!(payload["id"], card.meta.id.as_str());
+    assert_eq!(payload["title"], "Hooked task");
+    assert_eq!(payload["status"], "done");
+    assert_eq!(payload["card"], done.path.as_str());
+    assert_eq!(payload["approval"], "interactive");
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_failing_or_slow_hook_leaves_card_done() {
+    let (mut store, tmp) = hook_store("fails", CardScope::Global, on_done("echo boom >&2; exit 3"));
+    store
+        .add_task("Fails @ken", None, vec![], None, None)
+        .unwrap();
+    let done = store
+        .complete_task_with("1", "ken", None, Approval::Interactive)
+        .unwrap();
+    assert_eq!(done.meta.status, TaskStatus::Done);
+    match store.run_on_done_hook(&done) {
+        hooks::HookOutcome::Failed(why) => {
+            assert!(why.contains("exit 3"), "{why}");
+            assert!(why.contains("boom"), "{why}");
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+
+    store.config.hooks = Hooks {
+        on_done: Some("sleep 5".to_string()),
+        hook_timeout_secs: 1,
+    };
+    let started = std::time::Instant::now();
+    assert_eq!(
+        store.run_on_done_hook(&done),
+        hooks::HookOutcome::TimedOut(1)
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(4));
+    let reloaded = store.find_task("1").unwrap();
+    assert_eq!(reloaded.meta.status, TaskStatus::Done);
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_board_config_cannot_set_hooks() {
+    let marker_dir = std::env::temp_dir().join(format!("tkmd-hook-marker-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&marker_dir);
+    fs::create_dir_all(&marker_dir).unwrap();
+    let marker = marker_dir.join("ran");
+    let board_hook = on_done(&format!("touch '{}'", marker.display()));
+
+    // A local board whose own config sets [hooks], with a user config that sets none.
+    let (mut local, tmp) = hook_store("board", CardScope::Local, board_hook.clone());
+    let (user, user_tmp) = hook_store("user", CardScope::Global, Hooks::default());
+    local.peer = Some(Box::new(user));
+    local
+        .add_task("Board task @ken", None, vec![], None, None)
+        .unwrap();
+    let done = local
+        .complete_task_with("1", "ken", None, Approval::Interactive)
+        .unwrap();
+    assert_eq!(done.meta.status, TaskStatus::Done);
+    assert!(!marker.exists(), "a board's [hooks] table ran a command");
+    assert_eq!(
+        local.run_on_done_hook(&done),
+        hooks::HookOutcome::NotConfigured
+    );
+
+    // The same command in the user config does run for that board's cards.
+    local.peer.as_mut().unwrap().config.hooks = board_hook;
+    assert_eq!(local.run_on_done_hook(&done), hooks::HookOutcome::Ran);
+    assert!(marker.exists());
+
+    // A local store with no user config loaded runs nothing.
+    local.peer = None;
+    assert_eq!(
+        local.run_on_done_hook(&done),
+        hooks::HookOutcome::NotConfigured
+    );
+    for d in [tmp, user_tmp, marker_dir] {
+        let _ = fs::remove_dir_all(d);
+    }
 }

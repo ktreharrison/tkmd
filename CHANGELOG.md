@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`[hooks] on_done`** (default: unset) runs a shell command after each card becomes `done`, including auto-accepts; `pending-close` never runs it. The command gets `TK_EVENT`, `TK_ID`, `TK_TITLE`, `TK_OWNER`, `TK_STATUS`, `TK_APPROVAL`, `TK_CARD` and `TK_BOARD`, plus the event as one JSON line on stdin, and runs in the board's root. It runs after the card is saved: a failure or a timeout (`hook_timeout_secs`, default 30, `0` = no limit) prints a warning and the card stays done. Hooks are read only from the user config (`~/.config/tkmd/config.toml`); a `[hooks]` table in a board's `.tkmd.toml` is ignored with a warning, so a shared board cannot make `tk d` run its command.
+
+### Fixed
+- **`tk d` no longer claims a Daily Note entry it did not write.** It printed "logged to today's Daily Note!" on every sign-off, including CLI-mode boards, which keep no daily notes, and after a failed write. It now prints `logged to daily note <path>` only when the card is in the note.
+
 ## [0.3.0] - 2026-11-07
 
 ### Added

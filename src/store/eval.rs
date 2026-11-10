@@ -23,20 +23,40 @@ pub(crate) fn has_eval(card: &TaskCard) -> bool {
 /// a background child that keeps stdout open cannot stretch the eval past its timeout.
 /// Returns `Ok(None)` on timeout. Output is drained on threads and capped per stream.
 pub(crate) fn run_with_timeout(
-    mut cmd: Command,
+    cmd: Command,
     timeout: Option<std::time::Duration>,
 ) -> std::io::Result<Option<std::process::Output>> {
-    use std::io::Read;
+    run_with_timeout_input(cmd, timeout, None)
+}
+
+/// [`run_with_timeout`], writing `input` to the command's stdin (stdin is empty when `None`).
+/// The input is written on its own thread, so a command that never reads it cannot block us.
+pub(crate) fn run_with_timeout_input(
+    mut cmd: Command,
+    timeout: Option<std::time::Duration>,
+    input: Option<Vec<u8>>,
+) -> std::io::Result<Option<std::process::Output>> {
+    use std::io::{Read, Write};
     use std::process::Stdio;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
     let mut child = cmd.spawn()?;
+    if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
+        // A broken pipe just means the command did not read its input.
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&bytes);
+        });
+    }
     fn drain(pipe: Option<Box<dyn Read + Send>>) -> std::thread::JoinHandle<Vec<u8>> {
         std::thread::spawn(move || {
             let mut kept = Vec::new();
@@ -122,7 +142,7 @@ fn kill_process_tree(child: &mut std::process::Child) {
 
 /// The shell evals run under: `$SHELL` when it exists, else bash, zsh, then `sh`.
 #[cfg(not(target_os = "windows"))]
-fn eval_shell() -> String {
+pub(crate) fn eval_shell() -> String {
     if let Ok(s) = std::env::var("SHELL")
         && !s.is_empty()
         && Path::new(&s).exists()

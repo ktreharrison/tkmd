@@ -211,7 +211,7 @@ In merged view (`tk -A`), task IDs display distinct scope indicators (`tk-001L` 
 | `tk watch` | `tk w` | Live auto-resizing dashboard (reflows on pane resize or file change) |
 | `tk review` | `tk r` | Dedicated sign-off dashboard displaying pending local and global tasks |
 | `tk review 1 -n "All checks green"` | `tk r 1` | Move task to `pending-close` (auto-runs `eval` gate) |
-| `tk done 1 -n "Verified"` | `tk d 1` | Sign off and close task (`status: done` + Daily Note entry in Obsidian mode) |
+| `tk done 1 -n "Verified"` | `tk d 1` | Sign off and close task (`status: done` + Daily Note entry in Obsidian mode + your [`on_done` hook](docs/design.md#hooks-run-a-command-after-sign-off), if set) |
 | `tk done 1 2 3` / `tk done --pending` | `tk d --pending` | Bulk sign-off: one summary and one confirmation; a task that fails its checks is skipped and reported |
 | `tk auto 1 2` | `tk auto 1 --off` | Approve each task's eval in advance: the task closes itself when the owner submits and that check passes |
 | `tk add p1 Fix auth +app @ken due:tomorrow` | `tk a ...` | Create a task card using `todo.txt` shorthand (`p0`/`p1`/`p2`, `+project`, `sid:<id>`) |

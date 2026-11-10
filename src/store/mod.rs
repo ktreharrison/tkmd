@@ -1,13 +1,14 @@
 pub mod config;
 pub mod doctor;
 pub mod eval;
+pub mod hooks;
 pub mod lock;
 pub mod receipt;
 #[cfg(test)]
 mod tests;
 
 pub use config::{
-    AppConfig, Approval, Policy, ScopeSelection, detect_editor, detect_git_root,
+    AppConfig, Approval, Hooks, Policy, ScopeSelection, detect_editor, detect_git_root,
     detect_installed_editors, detect_local_store, detect_obsidian_vault,
 };
 pub use lock::CardLock;
@@ -138,6 +139,7 @@ impl TaskStore {
                 obsidian_vault_name: None,
                 editor: Some(detect_editor()),
                 policy: Policy::default(),
+                hooks: Hooks::default(),
             }
         };
 
@@ -423,6 +425,7 @@ views:
             obsidian_vault_name: vault_name,
             editor: editor.or_else(|| Some(detect_editor())),
             policy: Policy::default(),
+            hooks: Hooks::default(),
         };
 
         let cfg_path = if is_local {
@@ -1112,13 +1115,43 @@ views:
             .then_some(peer)
     }
 
-    /// Daily-note entry for a completed task. The completion is already committed, so a
-    /// failure here is a warning, never an error that skips work after it.
+    /// Follow-ups for a completed task: the daily-note entry (Obsidian mode) and the user's
+    /// `on_done` hook. The completion is already committed, so a failure here is a warning,
+    /// never an error that skips work after it. Reports go to stderr (stdout is MCP's channel).
     pub(crate) fn note_completion(&self, card: &TaskCard, note: Option<&str>) {
-        if let Err(e) = self.log_to_daily_note(card, note) {
-            eprintln!(
+        match self.log_to_daily_note(card, note) {
+            Ok(Some(file)) => eprintln!(
+                "  {}: logged to daily note {}",
+                card.meta.id,
+                file.display()
+            ),
+            Ok(None) => {}
+            Err(e) => eprintln!(
                 "warning: {} is done, but the daily note was not updated: {:#}",
                 card.meta.id, e
+            ),
+        }
+        self.warn_ignored_board_hooks();
+        match self.run_on_done_hook(card) {
+            hooks::HookOutcome::NotConfigured => {}
+            hooks::HookOutcome::Ran => eprintln!("  {}: on_done hook ran", card.meta.id),
+            hooks::HookOutcome::Failed(why) => eprintln!(
+                "warning: {} is done, but the on_done hook failed ({})",
+                card.meta.id, why
+            ),
+            hooks::HookOutcome::TimedOut(secs) => eprintln!(
+                "warning: {} is done, but the on_done hook was killed after {}s ([hooks].hook_timeout_secs)",
+                card.meta.id, secs
+            ),
+        }
+    }
+
+    /// A board config that sets `[hooks]` is ignored; say so instead of failing silently.
+    fn warn_ignored_board_hooks(&self) {
+        if self.scope == CardScope::Local && self.config.hooks.on_done.is_some() {
+            eprintln!(
+                "warning: [hooks] in this board's config is ignored; tkmd reads hooks only from {}",
+                Self::config_file_path().display()
             );
         }
     }
@@ -1526,7 +1559,9 @@ views:
         Ok(dep_card)
     }
 
-    fn log_to_daily_note(&self, card: &TaskCard, note: Option<&str>) -> Result<()> {
+    /// Append the completion to today's daily note. Returns the note's path when the card is
+    /// in it (written now, or already there), and `None` when this store keeps no daily notes.
+    fn log_to_daily_note(&self, card: &TaskCard, note: Option<&str>) -> Result<Option<PathBuf>> {
         if card.scope == CardScope::Global
             && self.scope != CardScope::Global
             && let Some(ref peer) = self.peer
@@ -1534,7 +1569,7 @@ views:
             return peer.log_to_daily_note(card, note);
         }
         if self.config.mode == "cli" || self.config.daily_dir.trim().is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         fs::create_dir_all(&self.daily_path)?;
         let now = Local::now();
@@ -1561,7 +1596,7 @@ views:
             .unwrap_or(&card.meta.id);
 
         if raw.contains(stem) {
-            return Ok(());
+            return Ok(Some(daily_file));
         }
 
         let extra = match note {
@@ -1597,7 +1632,7 @@ views:
         };
 
         fs::write(&daily_file, updated)?;
-        Ok(())
+        Ok(Some(daily_file))
     }
 
     /// Fuzzy search across all task cards (`id`, `title`, `owner`, `project`, `tags`, `dod`, `session_id`, `body`).
