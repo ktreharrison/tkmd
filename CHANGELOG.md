@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-11-10
 
 ### Added
 - **`[hooks] on_done`** (default: unset) runs a shell command after each card becomes `done`, including auto-accepts; `pending-close` never runs it. The command gets `TK_EVENT`, `TK_ID`, `TK_TITLE`, `TK_OWNER`, `TK_STATUS`, `TK_APPROVAL`, `TK_CARD` and `TK_BOARD`, plus the event as one JSON line on stdin, and runs in the board's root. It runs after the card is saved, even if writing the event log or unblocking dependants fails: a failure or a timeout (`hook_timeout_secs`, default 30, `0` = no limit) prints a warning and the card stays done. Background jobs the hook starts keep running after it exits. Hooks are read only from the user config (`~/.config/tkmd/config.toml`); a `[hooks]` table in a board's `.tkmd.toml` is dropped unread (even if malformed) and reported as ignored, so a shared board cannot make `tk d` run its command.
