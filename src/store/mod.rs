@@ -127,7 +127,16 @@ impl TaskStore {
         let config: AppConfig = if let Some(p) = cfg_file {
             let raw = fs::read_to_string(&p)
                 .with_context(|| format!("Failed reading local config {:?}", p))?;
-            toml::from_str(&raw).with_context(|| format!("Invalid tkmd config {:?}", p))?
+            // A board cannot set hooks. Drop its [hooks] table before parsing, so a malformed
+            // one cannot stop the board from loading, and remember it was there to warn.
+            let mut table: toml::Table =
+                toml::from_str(&raw).with_context(|| format!("Invalid tkmd config {:?}", p))?;
+            let had_hooks = table.remove("hooks").is_some();
+            let mut cfg: AppConfig = toml::Value::Table(table)
+                .try_into()
+                .with_context(|| format!("Invalid tkmd config {:?}", p))?;
+            cfg.hooks.ignored_board_table = had_hooks;
+            cfg
         } else {
             AppConfig {
                 mode: "cli".to_string(),
@@ -1148,7 +1157,7 @@ views:
 
     /// A board config that sets `[hooks]` is ignored; say so instead of failing silently.
     fn warn_ignored_board_hooks(&self) {
-        if self.scope == CardScope::Local && self.config.hooks.on_done.is_some() {
+        if self.scope == CardScope::Local && self.config.hooks.ignored_board_table {
             eprintln!(
                 "warning: [hooks] in this board's config is ignored; tkmd reads hooks only from {}",
                 Self::config_file_path().display()
@@ -1595,7 +1604,8 @@ views:
             .and_then(|s| s.to_str())
             .unwrap_or(&card.meta.id);
 
-        if raw.contains(stem) {
+        // Only this card's own entry counts, not its id or stem inside other text.
+        if raw.contains(&format!("[[tasks/{stem}|")) {
             return Ok(Some(daily_file));
         }
 

@@ -18,6 +18,21 @@ pub(crate) fn has_eval(card: &TaskCard) -> bool {
         .is_some_and(|e| !e.trim().is_empty())
 }
 
+/// What to do with processes a command leaves running after its shell exits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stragglers {
+    /// Evals: the deadline covers the whole process group, and without a deadline the group is
+    /// killed shortly after the shell exits, so a check cannot leave work running.
+    Kill,
+    /// Hooks: once the shell exits, stop waiting and leave its background work running
+    /// (`curl ... &`). The timeout applies only while the shell itself runs.
+    Leave,
+}
+
+/// How long to wait for output threads after the command is finished or killed. A process that
+/// escaped the group (`setsid`) can hold a pipe open; we stop waiting instead of hanging.
+const DRAIN_JOIN_LIMIT: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Run a command, killing it and every process it started if it outlives `timeout`.
 /// The deadline covers the whole process group and output collection, not just the shell:
 /// a background child that keeps stdout open cannot stretch the eval past its timeout.
@@ -26,18 +41,21 @@ pub(crate) fn run_with_timeout(
     cmd: Command,
     timeout: Option<std::time::Duration>,
 ) -> std::io::Result<Option<std::process::Output>> {
-    run_with_timeout_input(cmd, timeout, None)
+    run_with_timeout_input(cmd, timeout, None, Stragglers::Kill)
 }
 
-/// [`run_with_timeout`], writing `input` to the command's stdin (stdin is empty when `None`).
+/// [`run_with_timeout`], writing `input` to the command's stdin (stdin is empty when `None`),
+/// with a choice of what happens to processes left behind by the shell.
 /// The input is written on its own thread, so a command that never reads it cannot block us.
 pub(crate) fn run_with_timeout_input(
     mut cmd: Command,
     timeout: Option<std::time::Duration>,
     input: Option<Vec<u8>>,
+    stragglers: Stragglers,
 ) -> std::io::Result<Option<std::process::Output>> {
     use std::io::{Read, Write};
     use std::process::Stdio;
+    use std::sync::{Arc, Mutex};
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -57,29 +75,34 @@ pub(crate) fn run_with_timeout_input(
             let _ = stdin.write_all(&bytes);
         });
     }
-    fn drain(pipe: Option<Box<dyn Read + Send>>) -> std::thread::JoinHandle<Vec<u8>> {
-        std::thread::spawn(move || {
-            let mut kept = Vec::new();
+    type Sink = Arc<Mutex<Vec<u8>>>;
+    // Output goes into shared buffers, so we can read what arrived without joining a thread
+    // that may still be blocked on a pipe held open by an escaped process.
+    fn drain(pipe: Option<Box<dyn Read + Send>>) -> (Sink, std::thread::JoinHandle<()>) {
+        let sink: Sink = Arc::default();
+        let kept = Arc::clone(&sink);
+        let handle = std::thread::spawn(move || {
             if let Some(mut p) = pipe {
                 let mut buf = [0u8; 8192];
                 while let Ok(n) = p.read(&mut buf) {
                     if n == 0 {
                         break;
                     }
+                    let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
                     let room = EVAL_CAPTURE_LIMIT.saturating_sub(kept.len());
                     kept.extend_from_slice(&buf[..n.min(room)]);
                 }
             }
-            kept
-        })
+        });
+        (sink, handle)
     }
-    let out_t = drain(
+    let (out_sink, out_t) = drain(
         child
             .stdout
             .take()
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
     );
-    let err_t = drain(
+    let (err_sink, err_t) = drain(
         child
             .stderr
             .take()
@@ -99,13 +122,21 @@ pub(crate) fn run_with_timeout_input(
         if status.is_some() && out_t.is_finished() && err_t.is_finished() {
             break false;
         }
-        if timeout.is_some_and(|t| start.elapsed() >= t) {
-            break true;
-        }
-        // No timeout configured: still stop background children that outlive the shell.
-        if timeout.is_none() && exited_at.is_some_and(|t| t.elapsed() >= EVAL_DRAIN_GRACE) {
-            kill_process_tree(&mut child);
-            break false;
+        let grace_over = exited_at.is_some_and(|t| t.elapsed() >= EVAL_DRAIN_GRACE);
+        if stragglers == Stragglers::Leave && status.is_some() {
+            // The shell is done; whatever it left in the background keeps running.
+            if grace_over || timeout.is_some_and(|t| start.elapsed() >= t) {
+                break false;
+            }
+        } else {
+            if timeout.is_some_and(|t| start.elapsed() >= t) {
+                break true;
+            }
+            // No timeout configured: still stop background children that outlive the shell.
+            if timeout.is_none() && grace_over {
+                kill_process_tree(&mut child);
+                break false;
+            }
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
@@ -113,8 +144,12 @@ pub(crate) fn run_with_timeout_input(
         kill_process_tree(&mut child);
         let _ = child.wait();
     }
-    let stdout = out_t.join().unwrap_or_default();
-    let stderr = err_t.join().unwrap_or_default();
+    let joined_by = std::time::Instant::now() + DRAIN_JOIN_LIMIT;
+    while !(out_t.is_finished() && err_t.is_finished()) && std::time::Instant::now() < joined_by {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let take = |s: &Sink| s.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let (stdout, stderr) = (take(&out_sink), take(&err_sink));
     if timed_out {
         return Ok(None);
     }
@@ -136,6 +171,15 @@ fn kill_process_tree(child: &mut std::process::Child) {
         const SIGKILL: i32 = 9;
         // The child leads its own process group, so -pid reaches everything it spawned.
         unsafe { kill(-(child.id() as i32), SIGKILL) };
+    }
+    #[cfg(windows)]
+    {
+        // `/T` ends the whole tree; `child.kill()` alone would leave grandchildren running.
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
     let _ = child.kill();
 }

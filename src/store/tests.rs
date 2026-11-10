@@ -2291,6 +2291,7 @@ fn test_hooks_parse_from_user_config() {
     assert!(toml::to_string_pretty(&cfg).unwrap().contains("[hooks]"));
 }
 
+#[cfg(unix)]
 #[test]
 fn test_on_done_hook_runs_after_sign_off_with_env_and_stdin() {
     let (mut store, tmp) = hook_store("runs", CardScope::Global, Hooks::default());
@@ -2321,23 +2322,27 @@ fn test_on_done_hook_runs_after_sign_off_with_env_and_stdin() {
     let written = fs::read_to_string(&out).expect("hook did not run on done");
     let mut lines = written.lines();
     let env_line = lines.next().unwrap();
+    // Hooks get resolved absolute paths (on macOS /var is a symlink to /private/var).
+    let card_abs = hooks::absolute(&done.path).to_string_lossy().into_owned();
+    let board_abs = hooks::absolute(&store.config.vault_path)
+        .to_string_lossy()
+        .into_owned();
     assert_eq!(
         env_line,
-        format!(
-            "done|{}|{}|{}",
-            card.meta.id, done.path, store.config.vault_path
-        )
+        format!("done|{}|{}|{}", card.meta.id, card_abs, board_abs)
     );
     let payload: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
     assert_eq!(payload["event"], "done");
     assert_eq!(payload["id"], card.meta.id.as_str());
     assert_eq!(payload["title"], "Hooked task");
     assert_eq!(payload["status"], "done");
-    assert_eq!(payload["card"], done.path.as_str());
+    assert_eq!(payload["card"], card_abs.as_str());
+    assert_eq!(payload["board"], board_abs.as_str());
     assert_eq!(payload["approval"], "interactive");
     let _ = fs::remove_dir_all(&tmp);
 }
 
+#[cfg(unix)]
 #[test]
 fn test_failing_or_slow_hook_leaves_card_done() {
     let (mut store, tmp) = hook_store("fails", CardScope::Global, on_done("echo boom >&2; exit 3"));
@@ -2359,6 +2364,7 @@ fn test_failing_or_slow_hook_leaves_card_done() {
     store.config.hooks = Hooks {
         on_done: Some("sleep 5".to_string()),
         hook_timeout_secs: 1,
+        ..Hooks::default()
     };
     let started = std::time::Instant::now();
     assert_eq!(
@@ -2371,6 +2377,7 @@ fn test_failing_or_slow_hook_leaves_card_done() {
     let _ = fs::remove_dir_all(&tmp);
 }
 
+#[cfg(unix)]
 #[test]
 fn test_board_config_cannot_set_hooks() {
     let marker_dir = std::env::temp_dir().join(format!("tkmd-hook-marker-{}", std::process::id()));
@@ -2410,4 +2417,130 @@ fn test_board_config_cannot_set_hooks() {
     for d in [tmp, user_tmp, marker_dir] {
         let _ = fs::remove_dir_all(d);
     }
+}
+
+#[test]
+fn test_board_hooks_table_is_dropped_even_when_malformed() {
+    let tmp = std::env::temp_dir().join(format!("tkmd-hook-boardcfg-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(tmp.join("tasks")).unwrap();
+    fs::write(
+        tmp.join(".tkmd.toml"),
+        format!(
+            "mode = \"cli\"\nvault_path = \"{}\"\ntasks_dir = \"tasks\"\ndefault_owner = \"ken\"\n\n[hooks]\non_done = 42\n",
+            tmp.display()
+        ),
+    )
+    .unwrap();
+    let store = TaskStore::load_local_store(&tmp).expect("a bad [hooks] table blocked the board");
+    assert!(store.config.hooks.ignored_board_table);
+    assert!(store.config.hooks.on_done.is_none());
+
+    // A [hooks] table without on_done is still reported as ignored.
+    fs::write(
+        tmp.join(".tkmd.toml"),
+        format!(
+            "mode = \"cli\"\nvault_path = \"{}\"\ntasks_dir = \"tasks\"\ndefault_owner = \"ken\"\n\n[hooks]\nhook_timeout_secs = 5\n",
+            tmp.display()
+        ),
+    )
+    .unwrap();
+    let store = TaskStore::load_local_store(&tmp).unwrap();
+    assert!(store.config.hooks.ignored_board_table);
+    assert_eq!(store.config.hooks.hook_timeout_secs, 30);
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_hook_paths_are_absolute_and_expanded() {
+    let home = std::env::var("HOME").unwrap();
+    assert!(hooks::absolute("~/tkmd-not-there").starts_with(&home));
+    let here = std::env::current_dir().unwrap().canonicalize().unwrap();
+    assert_eq!(hooks::absolute("."), here);
+    assert!(hooks::absolute("tasks/x.md").is_absolute());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_hook_runs_even_when_event_log_fails() {
+    let (mut store, tmp) = hook_store("logfail", CardScope::Global, Hooks::default());
+    let marker = tmp.join("ran");
+    store.config.hooks = on_done(&format!("touch '{}'", marker.display()));
+    store
+        .add_task("Log fails @ken", None, vec![], None, None)
+        .unwrap();
+    // Make the event log unwritable: a directory where the file should be.
+    let events = store.tasks_path.join(".events.jsonl");
+    let _ = fs::remove_file(&events);
+    fs::create_dir_all(&events).unwrap();
+    let res = store.complete_task_with("1", "ken", None, Approval::Interactive);
+    assert!(
+        res.is_err(),
+        "the event-log failure should still be reported"
+    );
+    assert_eq!(store.find_task("1").unwrap().meta.status, TaskStatus::Done);
+    assert!(
+        marker.exists(),
+        "the hook was skipped because the event log failed"
+    );
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_hook_background_work_keeps_running() {
+    let (mut store, tmp) = hook_store("bg", CardScope::Global, Hooks::default());
+    let marker = tmp.join("late");
+    store.config.hooks = Hooks {
+        on_done: Some(format!("(sleep 3; touch '{}') & exit 0", marker.display())),
+        hook_timeout_secs: 0,
+        ..Hooks::default()
+    };
+    let card = store
+        .add_task("Background @ken", None, vec![], None, None)
+        .unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(store.run_on_done_hook(&card), hooks::HookOutcome::Ran);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "waited for background work"
+    );
+    assert!(!marker.exists());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !marker.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(marker.exists(), "the hook's background work was killed");
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_daily_note_mention_is_not_an_entry() {
+    let (mut store, tmp) = hook_store("daily", CardScope::Global, Hooks::default());
+    store.config.mode = "obsidian".to_string();
+    store.config.daily_dir = "journals".to_string();
+    store.daily_path = tmp.join("journals");
+    let card = store
+        .add_task("Daily @ken", None, vec![], None, None)
+        .unwrap();
+    let stem = Path::new(&card.path)
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    fs::create_dir_all(&store.daily_path).unwrap();
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let note = store.daily_path.join(format!("{today}.md"));
+    fs::write(
+        &note,
+        format!("## Notes\n\nTalked about {stem} today.\n\n---\n## Task List\n\n---\n"),
+    )
+    .unwrap();
+    store
+        .complete_task_with("1", "ken", None, Approval::Interactive)
+        .unwrap();
+    let raw = fs::read_to_string(&note).unwrap();
+    assert!(raw.contains(&format!("[[tasks/{stem}|")), "{raw}");
+    let _ = fs::remove_dir_all(&tmp);
 }

@@ -199,6 +199,10 @@ pub struct Hooks {
     /// Kill the hook (and everything it started) after this many seconds; `0` means no limit.
     #[serde(default = "default_hook_timeout")]
     pub hook_timeout_secs: u64,
+    /// Set when a board's own config had a `[hooks]` table, which tkmd dropped unread.
+    /// Only used to warn at sign-off; never read from or written to a config file.
+    #[serde(skip)]
+    pub ignored_board_table: bool,
 }
 
 impl Default for Hooks {
@@ -206,6 +210,7 @@ impl Default for Hooks {
         Self {
             on_done: None,
             hook_timeout_secs: default_hook_timeout(),
+            ignored_board_table: false,
         }
     }
 }

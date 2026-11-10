@@ -154,9 +154,10 @@ on_done = "~/bin/tk-queue"   # unset by default: nothing runs
 hook_timeout_secs = 30       # kill a hung hook (and its children); 0 = no limit
 ```
 
-- **Input**: environment variables `TK_EVENT=done`, `TK_ID`, `TK_TITLE`, `TK_OWNER`, `TK_STATUS`, `TK_APPROVAL`, `TK_CARD` (the card's path) and `TK_BOARD` (the board's root), plus one JSON line on stdin with the same fields and a `timestamp`. The command runs in the board's root.
-- **After the card is saved**: the card is already `done` and its lock released. A hook that fails or times out prints a warning; it never undoes the sign-off. `tk d` reports `on_done hook ran` on success.
-- **User config only**: boards are shared and cloned, so a `[hooks]` table in a board's `.tkmd.toml` is ignored with a warning. Otherwise anyone who can edit a board could make your next `tk d` run their command.
+- **Input**: environment variables `TK_EVENT=done`, `TK_ID`, `TK_TITLE`, `TK_OWNER`, `TK_STATUS`, `TK_APPROVAL`, `TK_CARD` (the card's path) and `TK_BOARD` (the board's root), plus one JSON line on stdin with the same fields and a `timestamp`. Both paths are absolute, with `~/` expanded. The command runs in the board's root.
+- **After the card is saved**: the card is already `done` and its lock released. The hook runs even if writing the event log or unblocking dependants fails afterwards; `tk d` still reports that error. A hook that fails or times out prints a warning; it never undoes the sign-off. `tk d` reports `on_done hook ran` on success.
+- **Background work keeps running**: tkmd waits for the hook's shell, not for what it starts. Once the shell exits (and after a 2-second grace for its output), `tk d` moves on and leaves background jobs such as `curl ... &` running. The timeout kills the hook's whole process tree only while the shell itself is still running. Redirect a background job's output (`>/dev/null 2>&1`) so it does not write to a closed pipe.
+- **User config only**: boards are shared and cloned, so a `[hooks]` table in a board's `.tkmd.toml` is dropped unread (a malformed one cannot stop the board loading) and `tk d` warns that it was ignored. Otherwise anyone who can edit a board could make your next `tk d` run their command.
 - **Not a delivery queue**: tkmd runs the hook once and does not retry. The card's execution log and `.events.jsonl` remain the record; a hook that needs guaranteed delivery should write to its own queue.
 
 Example, queueing sign-offs for an agent to log later:
