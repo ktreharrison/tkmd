@@ -390,7 +390,8 @@ impl TaskStore {
                 self.config.default_owner
             );
             self.write_card(&card)?;
-            self.log_event(
+            // The card is done from here on: run its follow-ups even if a later step fails.
+            let logged = self.log_event(
                 &card.meta.id,
                 "auto-accepted",
                 actor,
@@ -399,10 +400,12 @@ impl TaskStore {
                 "done",
                 Some(true),
                 &card.meta.title,
-            )?;
+            );
             drop(_lock);
-            self.cascade_unblock(&card.meta.id, &today, &now_ts)?;
+            let unblocked = self.cascade_unblock(&card.meta.id, &today, &now_ts);
             self.note_completion(&card, note);
+            logged?;
+            unblocked?;
             return Ok(card);
         }
 
@@ -722,7 +725,8 @@ impl TaskStore {
         );
 
         self.write_card(&card)?;
-        self.log_event(
+        // The card is done from here on: run its follow-ups even if a later step fails.
+        let logged = self.log_event(
             &card.meta.id,
             "completed",
             &owner,
@@ -731,11 +735,13 @@ impl TaskStore {
             "done",
             Some(true),
             &card.meta.title,
-        )?;
+        );
         drop(lock);
 
-        self.cascade_unblock(&card.meta.id, &today, &now_ts)?;
+        let unblocked = self.cascade_unblock(&card.meta.id, &today, &now_ts);
         self.note_completion(&card, note);
+        logged?;
+        unblocked?;
         Ok(card)
     }
 }

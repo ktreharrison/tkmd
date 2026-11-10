@@ -175,9 +175,54 @@ pub struct AppConfig {
     /// Preferred editor for `tk e` and CLI-mode `tk o` (e.g., "hx", "nvim", "zed", "code", "vim")
     #[serde(default)]
     pub editor: Option<String>,
-    /// Lifecycle guardrails (`[policy]` table). Must stay the last field: TOML tables follow values.
+    /// Lifecycle guardrails (`[policy]` table). Tables must follow plain values in TOML, so
+    /// `policy` and `hooks` stay the last fields.
     #[serde(default)]
     pub policy: Policy,
+    /// Commands run after lifecycle events (`[hooks]` table). Honoured only in the user config
+    /// (`~/.config/tkmd/config.toml`); a board's own config cannot set them.
+    #[serde(default, skip_serializing_if = "Hooks::is_default")]
+    pub hooks: Hooks,
+}
+
+/// `[hooks]`: commands tkmd runs after lifecycle events. Off by default.
+///
+/// tkmd reads hooks only from the user config, never from a board's `.tkmd.toml`: boards are
+/// shared and cloned, so a board file must not be able to make your `tk d` run its command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hooks {
+    /// Shell command run after a card becomes `done` (a human sign-off, or an auto-accept the
+    /// human approved in advance). It runs after the card is saved, so a failing hook only warns.
+    /// Unset by default: nothing runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_done: Option<String>,
+    /// Kill the hook (and everything it started) after this many seconds; `0` means no limit.
+    #[serde(default = "default_hook_timeout")]
+    pub hook_timeout_secs: u64,
+    /// Set when a board's own config had a `[hooks]` table, which tkmd dropped unread.
+    /// Only used to warn at sign-off; never read from or written to a config file.
+    #[serde(skip)]
+    pub ignored_board_table: bool,
+}
+
+impl Default for Hooks {
+    fn default() -> Self {
+        Self {
+            on_done: None,
+            hook_timeout_secs: default_hook_timeout(),
+            ignored_board_table: false,
+        }
+    }
+}
+
+impl Hooks {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+fn default_hook_timeout() -> u64 {
+    30
 }
 
 /// `[policy]` guardrails for the submit -> review -> accept lifecycle.
@@ -254,6 +299,7 @@ impl Default for AppConfig {
                 obsidian_vault_name: vault_name,
                 editor,
                 policy: Policy::default(),
+                hooks: Hooks::default(),
             }
         } else {
             Self {
@@ -266,6 +312,7 @@ impl Default for AppConfig {
                 obsidian_vault_name: None,
                 editor,
                 policy: Policy::default(),
+                hooks: Hooks::default(),
             }
         }
     }

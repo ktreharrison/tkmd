@@ -475,6 +475,7 @@ mod tests {
             obsidian_vault_name: None,
             editor: None,
             policy: crate::store::Policy::default(),
+            hooks: crate::store::Hooks::default(),
         };
 
         let store = TaskStore {

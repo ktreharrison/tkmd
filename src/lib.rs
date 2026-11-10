@@ -185,7 +185,7 @@ enum Commands {
         #[arg(short, long)]
         session: Option<String>,
     },
-    /// Complete a task -> done + Daily Note log (alias: `d`)
+    /// Complete a task -> done (+ Daily Note entry in Obsidian mode, + `[hooks].on_done`) (alias: `d`)
     #[command(visible_alias = "d")]
     Done {
         /// Task ID(s) (e.g. 1 or tk-001; several: `tk d 1 2 3`)
@@ -2954,7 +2954,7 @@ fn confirm(question: &str) -> Result<bool> {
 fn done_message(status: &TaskStatus, id: &str, title: &str) -> String {
     if *status == TaskStatus::Done {
         format!(
-            "{GREEN}✅ Completed{RESET} {BOLD}{}{RESET} ({}) and logged to today's Daily Note!",
+            "{GREEN}✅ Completed{RESET} {BOLD}{}{RESET} ({}).",
             id, title
         )
     } else {
@@ -2983,6 +2983,8 @@ mod tests {
         let msg = done_message(&TaskStatus::Done, "tk-003", "Fix bug");
         assert!(msg.contains("Completed"));
         assert!(!msg.contains("Submitted"));
+        // The daily note is reported only when it is written (CLI-mode boards keep none).
+        assert!(!msg.contains("Daily Note"));
     }
 
     #[test]
@@ -3089,6 +3091,7 @@ mod tests {
                 obsidian_vault_name: None,
                 editor: None,
                 policy: store::Policy::default(),
+                hooks: store::Hooks::default(),
             },
             scope: CardScope::Local,
             peer: None,
