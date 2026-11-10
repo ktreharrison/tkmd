@@ -2544,3 +2544,63 @@ fn test_daily_note_mention_is_not_an_entry() {
     assert!(raw.contains(&format!("[[tasks/{stem}|")), "{raw}");
     let _ = fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn test_publish_new_file_never_replaces_and_leaves_no_temp_files() {
+    let dir = std::env::temp_dir().join(format!("tkmd-publish-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("config.toml");
+
+    assert_eq!(
+        publish_new_file(&cfg, "first = 1\n").unwrap(),
+        Published::Created
+    );
+    // A second writer, e.g. a parallel first run, finds the config and must not replace it.
+    assert_eq!(
+        publish_new_file(&cfg, "second = 2\n").unwrap(),
+        Published::AlreadyThere
+    );
+    assert_eq!(fs::read_to_string(&cfg).unwrap(), "first = 1\n");
+    let leftovers: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n != "config.toml")
+        .collect();
+    assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_parallel_publishers_agree_on_one_complete_config() {
+    let dir = std::env::temp_dir().join(format!("tkmd-publish-race-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("config.toml");
+    let body = |i: usize| {
+        format!(
+            "mode = \"cli\"\nvault_path = \"/v{i}\"\ntasks_dir = \"tasks\"\ndefault_owner = \"o\"\n"
+        )
+    };
+    let handles: Vec<_> = (0..16)
+        .map(|i| {
+            let cfg = cfg.clone();
+            let text = body(i);
+            std::thread::spawn(move || {
+                let r = publish_new_file(&cfg, &text).unwrap();
+                // Every thread, winner or not, reads one complete config.
+                (r, read_config_file(&cfg).unwrap().vault_path)
+            })
+        })
+        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let created = results
+        .iter()
+        .filter(|(r, _)| *r == Published::Created)
+        .count();
+    assert_eq!(created, 1, "{results:?}");
+    let first = &results[0].1;
+    assert!(results.iter().all(|(_, v)| v == first), "{results:?}");
+    let _ = fs::remove_dir_all(&dir);
+}
