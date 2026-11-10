@@ -35,6 +35,26 @@ pub struct TaskStore {
     pub is_uninitialized_local: bool,
 }
 
+/// Create `path` with `contents` unless it already exists, so that a reader never sees it
+/// half-written. On a first run several `tk` processes (parallel agents) can all find no config
+/// and write the default; with a plain `fs::write` another process could read the file after it
+/// was truncated and before it was written, and fail with "missing field `vault_path`".
+/// Best effort: the default config is also used in memory, so a failed write is not an error.
+fn write_new_file_atomically(path: &Path, contents: &str) {
+    let tmp = path.with_extension(format!("toml.tmp-{}", std::process::id()));
+    if fs::write(&tmp, contents).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return;
+    }
+    // A hard link publishes the complete file in one step and refuses to replace a config
+    // another process created first. Where links are unsupported, fall back to a rename,
+    // which is also atomic, but only if no config has appeared meanwhile.
+    if fs::hard_link(&tmp, path).is_err() && !path.exists() {
+        let _ = fs::rename(&tmp, path);
+    }
+    let _ = fs::remove_file(&tmp);
+}
+
 impl TaskStore {
     pub fn config_file_path() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -61,7 +81,7 @@ impl TaskStore {
             if let Some(parent) = cfg_path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            let _ = fs::write(&cfg_path, toml::to_string_pretty(&def).unwrap_or_default());
+            write_new_file_atomically(&cfg_path, &toml::to_string_pretty(&def).unwrap_or_default());
             def
         };
 

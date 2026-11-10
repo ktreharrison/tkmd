@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **First run with parallel agents no longer fails with "missing field `vault_path`".** When several `tk` processes started at once with no user config, each wrote the default `~/.config/tkmd/config.toml` with a plain write, and another process could read it in between being emptied and written. The default config is now written to a temporary file and published in one step (a hard link, or a rename if links are unsupported) and never replaces a config another process created. It made `concurrent_adds_get_unique_ids` fail now and then (3 of 60 runs before, 0 of 60 after).
+
 ## [0.4.0] - 2026-11-10
 
 ### Added
