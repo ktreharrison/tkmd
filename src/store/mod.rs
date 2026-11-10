@@ -35,24 +35,74 @@ pub struct TaskStore {
     pub is_uninitialized_local: bool,
 }
 
+/// Whether [`publish_new_file`] created the file or found one another process created first.
+#[derive(Debug, PartialEq, Eq)]
+enum Published {
+    Created,
+    AlreadyThere,
+}
+
 /// Create `path` with `contents` unless it already exists, so that a reader never sees it
 /// half-written. On a first run several `tk` processes (parallel agents) can all find no config
 /// and write the default; with a plain `fs::write` another process could read the file after it
 /// was truncated and before it was written, and fail with "missing field `vault_path`".
-/// Best effort: the default config is also used in memory, so a failed write is not an error.
-fn write_new_file_atomically(path: &Path, contents: &str) {
-    let tmp = path.with_extension(format!("toml.tmp-{}", std::process::id()));
-    if fs::write(&tmp, contents).is_err() {
+fn publish_new_file(path: &Path, contents: &str) -> std::io::Result<Published> {
+    use std::io::{ErrorKind, Write};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    // Unique per attempt, so two writers never share (and truncate) one temporary file.
+    let tmp = path.with_extension(format!(
+        "toml.tmp-{}-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed),
+        nanos
+    ));
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(contents.as_bytes()));
+    if let Err(e) = written {
         let _ = fs::remove_file(&tmp);
-        return;
+        return Err(e);
     }
-    // A hard link publishes the complete file in one step and refuses to replace a config
-    // another process created first. Where links are unsupported, fall back to a rename,
-    // which is also atomic, but only if no config has appeared meanwhile.
-    if fs::hard_link(&tmp, path).is_err() && !path.exists() {
-        let _ = fs::rename(&tmp, path);
-    }
+    // A hard link publishes the complete file in one step and fails if the target exists.
+    let linked = fs::hard_link(&tmp, path);
     let _ = fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(Published::Created),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(Published::AlreadyThere),
+        // No hard links here (some network or FAT filesystems): create it in place, still never
+        // replacing an existing file. Readers retry on an empty file to cover the brief gap.
+        Err(_) => match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(mut f) => f
+                .write_all(contents.as_bytes())
+                .map(|()| Published::Created),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(Published::AlreadyThere),
+            Err(e) => Err(e),
+        },
+    }
+}
+
+/// Read and parse a config file. An empty file is one another process is still creating
+/// (see [`publish_new_file`]), so wait briefly for its contents before parsing.
+fn read_config_file(path: &Path) -> Result<AppConfig> {
+    let mut raw = String::new();
+    for _ in 0..50 {
+        raw = fs::read_to_string(path).with_context(|| format!("Failed reading {:?}", path))?;
+        if !raw.trim().is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    toml::from_str(&raw).with_context(|| format!("Invalid tkmd config {:?}", path))
 }
 
 impl TaskStore {
@@ -73,16 +123,18 @@ impl TaskStore {
         let cfg_path = Self::config_file_path();
 
         let config: AppConfig = if cfg_path.exists() {
-            let raw = fs::read_to_string(&cfg_path)
-                .with_context(|| format!("Failed reading {:?}", cfg_path))?;
-            toml::from_str(&raw).with_context(|| format!("Invalid tkmd config {:?}", cfg_path))?
+            read_config_file(&cfg_path)?
         } else {
             let def = AppConfig::default();
             if let Some(parent) = cfg_path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            write_new_file_atomically(&cfg_path, &toml::to_string_pretty(&def).unwrap_or_default());
-            def
+            match publish_new_file(&cfg_path, &toml::to_string_pretty(&def).unwrap_or_default()) {
+                // Another process created the config first: use it, not our default.
+                Ok(Published::AlreadyThere) => read_config_file(&cfg_path)?,
+                // Best effort: the default also works in memory if the write failed.
+                Ok(Published::Created) | Err(_) => def,
+            }
         };
 
         let mut config = config;
